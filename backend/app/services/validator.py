@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""剧本校验器：钩子、字数、开篇、敏感词、静态人设 OOC，及审稿级一致性规则。
+"""剧本校验器：钩子、字数、开篇、敏感词、静态人设 OOC，审稿级一致性规则 + AI 味检测。
 静态规则优先，可独立于 LLM 运行；后续可加 LLM 深度 OOC 校验。"""
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 from ..models.character import Character
 from ..models.story import Episode
@@ -19,20 +20,29 @@ SENSITIVE_PATTERNS = [
 ]
 
 # 审稿级规则常量
-# 户外场景若误标【内】，剧组无法开拍（村口/巷口/广场/山道/街道/桥/井/集市/路口/门外/野外等）
 OUTDOOR_KEYWORDS = ["村口", "巷口", "广场", "山道", "街道", "长街", "集市", "路口", "门外", "院外",
                     "野外", "山路", "桥头", "井边", "村", "坡", "巷", "街", "田埂", "田间"]
-# 室内词：命中则即使含户外词也不算误标（如「村口茶馆」实为室内）
 INDOOR_KEYWORDS = ["茶馆", "店内", "店中", "馆", "铺", "堂", "屋", "宅", "府", "楼", "间", "房", "室内"]
-# 小说化心理/神态/眼神叙述词：分镜脚本中应改写为外部可见动作
 NOVEL_NARRATION = ["眼底", "眸色", "眸中", "心头", "心中", "暗暗", "眼神", "目光", "神色",
                    "嘴角", "眉心", "心头一", "心中一动", "眼底掠过", "眸色微动", "心头剧震"]
-MIN_LINE_RATIO = 0.35  # 台词字数 / 总字数，低于则提示叙述过重
+MIN_LINE_RATIO = 0.35
 _SCENE_RE = re.compile(r"【(内|外)｜[^｜】]+｜[日夜晚]】")
+
+# ===== AI 味检测常量 =====
+AI_REPEAT_WORDS = ["脸色铁青", "攥紧拳头", "冷笑", "眼神", "目光", "脸色骤变", "冷哼一声"]
+AI_REPEAT_THRESHOLD = 5
+DEUS_PATTERNS = ["恰好", "刚好", "正巧", "凑巧", "恰在此刻", "恰好此时", "说时迟"]
+DEUS_THRESHOLD = 3
+EAVESDROP_PATTERNS = ["窗外黑影", "黑影一闪", "偷听", "门帘", "一闪而过", "剪影", "隔着窗"]
+EAVESDROP_THRESHOLD = 4
+# 金句对仗：台词用排比句式讲大道理，书面感重（"救人一命，是积德；害人一命，是天理难容"）
+MAXIM_RE = re.compile(r"[^。，；]{1,9}，[^。；]{1,10}；[^。；]{1,10}，[^。；]{1,8}(是|乃|终归)")
+MAXIM_FALLBACK = ["天理难容", "无关输赢", "无关对错", "医者仁心", "大医精诚"]
+# 书面连词：台词出现则偏书面、缺口语烟火气（仅保留口语中罕见的）
+WRITTEN_WORDS = ["既然", "然而", "倘若", "岂", "莫非", "正如", "方才", "故曰", "勿须", "所料"]
 
 
 def _scene_marks(source: str):
-    """提取所有场景行（如【内｜村口｜日】），返回 match 迭代器。"""
     return _SCENE_RE.finditer(source)
 
 
@@ -45,18 +55,19 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
     characters = characters or []
     score = 100
 
+    repeat_counter = Counter()
+    deus_count = 0
+    eavesdrop_count = 0
+    hook_props = 0
+    hook_total = 0
+
     for ep in episodes:
         idx = ep.index
-        # 1) 钩子检查
         if not ep.hook and not _has_hook_beat(ep):
-            issues.append(Issue(
-                severity="error", code="missing_hook",
-                episode_index=idx,
-                message=f"第{idx}集缺少结尾钩子",
-                suggestion="在结尾增加『【本集钩子】：...』，停在即将揭晓的悬念节点",
-            ))
+            issues.append(Issue(severity="error", code="missing_hook",
+                                episode_index=idx, message=f"第{idx}集缺少结尾钩子",
+                                suggestion="在结尾增加『【本集钩子】：...』，停在即将揭晓的悬念节点"))
             score -= 8
-        # 2) 字数检查
         wc = ep.word_count
         if wc and wc < MIN_WORDS:
             issues.append(Issue(severity="warning", code="word_count_low",
@@ -68,14 +79,12 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
                                 episode_index=idx, message=f"第{idx}集字数 {wc}，高于 {MAX_WORDS}",
                                 suggestion="压缩台词与动作，单集控制在 300-500 字"))
             score -= 2
-        # 3) 敏感词
         for pat in SENSITIVE_PATTERNS:
             if pat in ep.source_text:
                 issues.append(Issue(severity="error", code="sensitive",
                                     episode_index=idx, message=f"第{idx}集命中敏感词：{pat}",
                                     suggestion="删除/改写相关内容，避免违规下架"))
                 score -= 10
-        # 4) 静态人设 OOC 提示（弱校验：禁止行为关键词出现在台词/动作中）
         for ch in characters:
             for fb in ch.forbidden_behavior:
                 if not fb.strip():
@@ -86,60 +95,68 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
                                         episode_index=idx,
                                         message=f"第{idx}集疑似触发『{ch.name}』禁止行为：{fb}",
                                         suggestion="核对是否违背该人物人设红线"))
-
-        # 5) 场景内外合理性：户外地点误标【内】＝剧组开不了工的低级错误
         for m in _scene_marks(ep.source_text):
             pos = m.group(0)
             if pos.startswith("【内") and any(k in pos for k in OUTDOOR_KEYWORDS) \
                     and not any(i in pos for i in INDOOR_KEYWORDS):
-                issues.append(Issue(
-                    severity="warning", code="scene_inout",
-                    episode_index=idx,
-                    message=f"第{idx}集户外场景误标【内】：{pos}",
-                    suggestion="村口/巷口/广场/山道/街道等室外场景应标【外】，室内才标【内】"))
+                issues.append(Issue(severity="warning", code="scene_inout",
+                                    episode_index=idx, message=f"第{idx}集户外场景误标【内】：{pos}",
+                                    suggestion="村口/巷口/广场/山道/街道等室外场景应标【外】"))
                 score -= 2
-                break  # 每集只报一次，避免刷屏
-
-        # 6) 台词密度：台词占比过低＝小说化叙述过重，偏离可拍分镜
+                break
         if ep.word_count:
             line_words = sum(len(b.text) for b in ep.beats if b.kind == "line")
             ratio = line_words / ep.word_count
             if ratio < MIN_LINE_RATIO:
-                issues.append(Issue(
-                    severity="warning", code="line_density",
-                    episode_index=idx,
-                    message=f"第{idx}集台词密度 {ratio:.0%}，低于建议 {MIN_LINE_RATIO:.0%}",
-                    suggestion="动作/叙述偏小说化，增加外部动作与对白拉扯，靠近可拍分镜"))
+                issues.append(Issue(severity="warning", code="line_density",
+                                    episode_index=idx,
+                                    message=f"第{idx}集台词密度 {ratio:.0%}，低于建议 {MIN_LINE_RATIO:.0%}",
+                                    suggestion="动作/叙述偏小说化，增加外部动作与对白拉扯"))
                 score -= 2
-
-        # 7) 小说化心理/神态/眼神叙述：分镜应改外部可见动作
         novel_hits = [k for k in NOVEL_NARRATION
                       if any(b.kind == "meta" and k in b.text for b in ep.beats)]
         if novel_hits:
-            issues.append(Issue(
-                severity="warning", code="novel_narration",
-                episode_index=idx,
-                message=f"第{idx}集含小说化叙述词：{'、'.join(novel_hits[:4])}",
-                suggestion="【动作】里避免心理/眼神/神态描写，改写为可拍的外部动作（如攥拳、移开视线、顿步）"))
+            issues.append(Issue(severity="warning", code="novel_narration",
+                                episode_index=idx,
+                                message=f"第{idx}集含小说化叙述词：{'、'.join(novel_hits[:4])}",
+                                suggestion="【动作】里避免心理/眼神/神态描写，改写为可拍外部动作"))
+            score -= 2
+        if idx in (16, 30) and "赵叔" in ep.source_text and "师叔" in ep.source_text:
+            issues.append(Issue(severity="warning", code="redundant_role",
+                                episode_index=idx,
+                                message="同集出现『赵叔』『师叔』两个功能相似的老伙计，疑似设定冗余",
+                                suggestion="合并为一个角色"))
+        if target_count is not None and idx == episodes[-1].index and len(episodes) < target_count:
+            issues.append(Issue(severity="warning", code="target_mismatch",
+                                episode_index=idx,
+                                message=f"目标 {target_count} 集，实际仅 {len(episodes)} 集",
+                                suggestion="补齐缺失集数，或将目标集数改为实际集数"))
+
+        # ---- AI 味：每集台词级检查 ----
+        lines = [b.text for b in ep.beats if b.kind == "line"]
+        maxim = [l for l in lines if MAXIM_RE.search(l) or any(m in l for m in MAXIM_FALLBACK)]
+        if maxim:
+            issues.append(Issue(severity="warning", code="ai_maxim",
+                                episode_index=idx,
+                                message=f"第{idx}集台词含对仗金句（书面感重）：『{maxim[0][:24]}…』",
+                                suggestion="口语化改写，避免开口讲大道理；用短句+行为代替说教"))
+            score -= 2
+        written = [w for w in WRITTEN_WORDS if any(w in l for l in lines)]
+        if written:
+            issues.append(Issue(severity="warning", code="ai_written",
+                                episode_index=idx,
+                                message=f"第{idx}集台词含书面连词：{'、'.join(written[:4])}，偏书面",
+                                suggestion="人物口语化：村民土气、反派乡绅圆滑、主角短句克制"))
             score -= 2
 
-        # 8) 重复功能角色提示（设定冗余：两个同职能配角）
-        if idx in (16, 30) and "赵叔" in ep.source_text and "师叔" in ep.source_text:
-            issues.append(Issue(
-                severity="warning", code="redundant_role",
-                episode_index=idx,
-                message="同集出现『赵叔』『师叔』两个功能相似的老伙计，疑似设定冗余",
-                suggestion="合并为一个角色，避免两个同职能配角同时存在"))
+        repeat_counter.update(w for w in AI_REPEAT_WORDS if w in ep.source_text)
+        deus_count += sum(1 for p in DEUS_PATTERNS if p in ep.source_text)
+        eavesdrop_count += sum(1 for p in EAVESDROP_PATTERNS if p in ep.source_text)
+        if ep.hook:
+            hook_total += 1
+            if any(k in ep.hook for k in ["印", "章", "信", "黑", "影", "暗格", "残页", "令牌", "密"]):
+                hook_props += 1
 
-        # 9) 集数完整性：实际集数 < 目标集数（投稿级事故，审稿第一页即卡）
-        if target_count is not None and idx == episodes[-1].index and len(episodes) < target_count:
-            issues.append(Issue(
-                severity="warning", code="target_mismatch",
-                episode_index=idx,
-                message=f"目标 {target_count} 集，实际仅 {len(episodes)} 集",
-                suggestion="补齐缺失集数，或将项目目标集数改为实际集数，保持一致"))
-
-    # 10) 开篇铺垫检查（第1集，启发式）
     if episodes:
         first = episodes[0]
         head = first.source_text[:120]
@@ -147,8 +164,31 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
             issues.append(Issue(severity="warning", code="slow_open",
                                 episode_index=first.index,
                                 message="第1集开头疑似大段背景/回忆铺垫",
-                                suggestion="短剧前 8 秒必须直抛绝境冲突，删除铺垫"))
+                                suggestion="短剧前 8 秒必须直抛绝境冲突"))
             score -= 3
+
+    # ---- AI 味：跨集聚合告警（一次性） ----
+    for w, n in repeat_counter.items():
+        if n >= AI_REPEAT_THRESHOLD:
+            issues.append(Issue(severity="warning", code="ai_repeat_word",
+                                message=f"动作/神态词『{w}』全剧出现 {n} 次，重复率过高",
+                                suggestion="差异化神态动作（指尖发抖、嘴角僵住、低头捻扳指沉默），避免一套动作循环"))
+            score -= 2
+    if deus_count >= DEUS_THRESHOLD:
+        issues.append(Issue(severity="warning", code="ai_deus_ex_machina",
+                            message=f"全剧出现 {deus_count} 处『恰好/刚好』式机械降神",
+                            suggestion="减少贵人恰好救场，改为主角提前布局/自救；贵人只提供事后资源"))
+        score -= 2
+    if eavesdrop_count >= EAVESDROP_THRESHOLD:
+        issues.append(Issue(severity="warning", code="ai_eavesdrop",
+                            message=f"全剧出现 {eavesdrop_count} 处窗外黑影/偷听/门帘桥段",
+                            suggestion="合并重复偷听桥段，改用正面冲突或人物直接交流推进信息"))
+        score -= 2
+    if hook_total >= 6 and hook_props / hook_total > 0.6:
+        issues.append(Issue(severity="warning", code="ai_hook_single",
+                            message=f"物证/悬疑类钩子占比 {hook_props}/{hook_total}，类型单一",
+                            suggestion="多用情感钩子（人物秘密、两难选择、心理转折），允许情感落点收尾"))
+        score -= 2
 
     score = max(0, score)
     if score >= 90:
