@@ -39,6 +39,17 @@ WRITTEN_WORDS = ["既然", "然而", "倘若", "岂", "莫非", "正如", "方�
 WEAKNESS_GROUNDED_WORDS = ["心软", "念旧", "旧情", "放他一马", "饶他一回", "狠不下心"]
 CLIFF_HOOK_WORDS = ["京城", "太医院", "神秘", "主子", "宫里", "宫墙", "御医世家", "来头不小"]
 CLIFF_SETUP_WORDS = ["京城", "太医院", "传闻", "御医", "世家", "宫里", "宫里来人", "宫里传话"]
+# 第四轮：陷害类桥段同质化——只统计反派"主动设局"词（诬告/诈死/陷害/买凶），
+# 不含"设局/构陷"（主角主动设局是加分项、背景讲述与判决词也会误捕）
+PLOT_REPEAT_WORDS = ["诬告", "诬陷", "诈死", "陷害", "买凶"]
+PLOT_REPEAT_THRESHOLD = 4
+# 第四轮：信息白送——反派/杀手/黑衣人主动全盘招供，代替主角主动调查
+INFO_GIVEAWAY_PATTERNS = ["全盘招供", "和盘托出", "一五一十", "全都招", "我全说", "都说了",
+                          "他全招了", "直接坦白", "如实招来"]
+# 第四轮：官府行动触发缺失——官差出动但未交代谁举报/县令是否知晓
+GOV_ACTION_WORDS = ["官差", "衙役", "差役", "官府", "带走", "锁拿"]
+GOV_TRIGGER_WORDS = ["县令", "举报", "报案", "状纸", "上堂", "奉县令", "大人", "衙门口",
+                     "官府令", "官差来查", "告到"]
 
 
 def _scene_marks(source: str):
@@ -62,6 +73,8 @@ def validate_episodes(episodes, characters=None, target_count=None):
     cliff_setup_count = 0
     full_body_text = ""
     cliff_ep = None
+    plot_eps = set()          # 命中陷害类桥段的集
+    giveaway_eps = []          # 命中信息白送的集
 
     for ep in episodes:
         idx = ep.index
@@ -148,6 +161,18 @@ def validate_episodes(episodes, characters=None, target_count=None):
         eavesdrop_count += sum(1 for p in EAVESDROP_PATTERNS if p in ep.source_text)
         full_body_text += ep.source_text
         cliff_setup_count += sum(1 for p in CLIFF_SETUP_WORDS if p in ep.source_text)
+        # 第四轮：桥段同质化 & 信息白送 & 官府行动触发缺失
+        if any(p in ep.source_text for p in PLOT_REPEAT_WORDS):
+            plot_eps.add(idx)
+        if any(p in ep.source_text for p in INFO_GIVEAWAY_PATTERNS):
+            giveaway_eps.append(idx)
+        has_gov_action = any(w in ep.source_text for w in GOV_ACTION_WORDS)
+        has_gov_trigger = any(t in ep.source_text for t in GOV_TRIGGER_WORDS)
+        if has_gov_action and not has_gov_trigger:
+            issues.append(Issue(severity="warning", code="gov_action_untriggered", episode_index=idx,
+                                message=f"第{idx}集官差/官府出动但未交代触发来源（谁举报/县令是否知晓）",
+                                suggestion="写明官差因何而来：谁报案/县令批示/正式上堂，禁止无由头天降官差"))
+            score -= 2
         if ep.hook:
             hook_total += 1
             if any(k in ep.hook for k in ["印", "章", "信", "黑", "影", "暗格", "残页", "令牌", "密"]):
@@ -185,6 +210,19 @@ def validate_episodes(episodes, characters=None, target_count=None):
         issues.append(Issue(severity="warning", code="ai_hook_single",
                             message=f"物证/悬疑类钩子占比 {hook_props}/{hook_total}，类型单一",
                             suggestion="多用情感钩子（人物秘密、两难选择、心理转折），允许情感落点收尾"))
+        score -= 2
+
+    # 第四轮：陷害类桥段同质化——同类"反派下套-主角拆穿"全剧超阈值集
+    if len(plot_eps) >= PLOT_REPEAT_THRESHOLD:
+        issues.append(Issue(severity="warning", code="ai_repeat_plot",
+                            message=f"陷害类冲突（诬告/栽赃/诈死/投毒/买凶/绑架）集中在 {sorted(plot_eps)} 共 {len(plot_eps)} 集，同质化偏高",
+                            suggestion="同类冲突全剧最多用 2 次，第四次换手段（篡改卷宗/收买证人/设局反间），避免'反派下套-主角拆穿'模板循环"))
+        score -= 2
+    # 第四轮：信息白送——关键线索靠反派/杀手主动全盘招供
+    if giveaway_eps:
+        issues.append(Issue(severity="warning", code="ai_info_giveaway",
+                            message=f"第 {'/'.join(map(str, giveaway_eps))} 集关键线索疑似靠反派/杀手主动全盘招供（白送）",
+                            suggestion="让反派只吐碎片化线索，主角靠走访/推理/对质拼凑真相，禁止'杀手和盘托出全部阴谋'"))
         score -= 2
 
     # 弱点落地检测仅针对主角：反派弱点（贪财/怕死等）常通过恶行天然体现，无需静态检测；
