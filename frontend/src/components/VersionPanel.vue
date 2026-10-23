@@ -51,7 +51,7 @@ const columns = [
     render: (row) => h(NPopconfirm, {
       onPositiveClick: () => doRestore(row.version)
     }, {
-      trigger: () => h(NButton, { size: 'tiny', type: 'warning', secondary }, () => '回滚'),
+      trigger: () => h(NButton, { size: 'tiny', type: 'warning', secondary: true }, () => '回滚'),
       default: () => '确认回滚到该版本？会先备份当前状态'
     })
   }
