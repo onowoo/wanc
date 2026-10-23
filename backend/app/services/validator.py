@@ -13,13 +13,11 @@ from ..models.validation import Issue, ValidationReport
 MIN_WORDS = 300
 MAX_WORDS = 500
 
-# 基础敏感词黑名单（简化版，真实审核还需人工复核 + 平台正式规则）
 SENSITIVE_PATTERNS = [
     "赌博", "高利贷", "裸贷", "涉政", "军警", "宗教", "封建迷信",
     "强买强卖", "虚假医疗", "包治百病", "性别对立", "仇富",
 ]
 
-# 审稿级规则常量
 OUTDOOR_KEYWORDS = ["村口", "巷口", "广场", "山道", "街道", "长街", "集市", "路口", "门外", "院外",
                     "野外", "山路", "桥头", "井边", "村", "坡", "巷", "街", "田埂", "田间"]
 INDOOR_KEYWORDS = ["茶馆", "店内", "店中", "馆", "铺", "堂", "屋", "宅", "府", "楼", "间", "房", "室内"]
@@ -28,30 +26,30 @@ NOVEL_NARRATION = ["眼底", "眸色", "眸中", "心头", "心中", "暗暗", "
 MIN_LINE_RATIO = 0.35
 _SCENE_RE = re.compile(r"【(内|外)｜[^｜】]+｜[日夜晚]】")
 
-# ===== AI 味检测常量 =====
 AI_REPEAT_WORDS = ["脸色铁青", "攥紧拳头", "冷笑", "眼神", "目光", "脸色骤变", "冷哼一声"]
 AI_REPEAT_THRESHOLD = 5
 DEUS_PATTERNS = ["恰好", "刚好", "正巧", "凑巧", "恰在此刻", "恰好此时", "说时迟"]
 DEUS_THRESHOLD = 3
-EAVESDROP_PATTERNS = ["窗外黑影", "黑影一闪", "偷听", "门帘", "一闪而过", "剪影", "隔着窗"]
+EAVESDROP_PATTERNS = ["窗外黑影", "黑影一闪", "偷听", "门帘", "一闪而过", "剪影", "隔着窗",
+                      "趴窗", "墙根", "站在门外", "恰在门外", "正好听到", "恰巧撞破", "撞破密谋"]
 EAVESDROP_THRESHOLD = 4
-# 金句对仗：台词用排比句式讲大道理，书面感重（"救人一命，是积德；害人一命，是天理难容"）
 MAXIM_RE = re.compile(r"[^。，；]{1,9}，[^。；]{1,10}；[^。；]{1,10}，[^。；]{1,8}(是|乃|终归)")
 MAXIM_FALLBACK = ["天理难容", "无关输赢", "无关对错", "医者仁心", "大医精诚"]
-# 书面连词：台词出现则偏书面、缺口语烟火气（仅保留口语中罕见的）
 WRITTEN_WORDS = ["既然", "然而", "倘若", "岂", "莫非", "正如", "方才", "故曰", "勿须", "所料"]
+WEAKNESS_GROUNDED_WORDS = ["心软", "念旧", "旧情", "放他一马", "饶他一回", "狠不下心"]
+CLIFF_HOOK_WORDS = ["京城", "太医院", "神秘", "主子", "宫里", "宫墙", "御医世家", "来头不小"]
+CLIFF_SETUP_WORDS = ["京城", "太医院", "传闻", "御医", "世家", "宫里", "宫里来人", "宫里传话"]
 
 
 def _scene_marks(source: str):
     return _SCENE_RE.finditer(source)
 
 
-def validate_episodes(episodes: list[Episode], characters: list[Character] | None = None,
-                      target_count: int | None = None) -> ValidationReport:
-    issues: list[Issue] = []
+def validate_episodes(episodes, characters=None, target_count=None):
+    issues = []
     if not episodes:
-        return ValidationReport(issues=[Issue(severity="error", code="no_episodes", message="没有解析到任何剧集")], score=0)
-
+        return ValidationReport(issues=[Issue(severity="error", code="no_episodes",
+                                              message="没有解析到任何剧集")], score=0)
     characters = characters or []
     score = 100
 
@@ -60,29 +58,33 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
     eavesdrop_count = 0
     hook_props = 0
     hook_total = 0
+    cliff_hook_hit = False
+    cliff_setup_count = 0
+    full_body_text = ""
+    cliff_ep = None
 
     for ep in episodes:
         idx = ep.index
         if not ep.hook and not _has_hook_beat(ep):
-            issues.append(Issue(severity="error", code="missing_hook",
-                                episode_index=idx, message=f"第{idx}集缺少结尾钩子",
+            issues.append(Issue(severity="error", code="missing_hook", episode_index=idx,
+                                message=f"第{idx}集缺少结尾钩子",
                                 suggestion="在结尾增加『【本集钩子】：...』，停在即将揭晓的悬念节点"))
             score -= 8
         wc = ep.word_count
         if wc and wc < MIN_WORDS:
-            issues.append(Issue(severity="warning", code="word_count_low",
-                                episode_index=idx, message=f"第{idx}集字数 {wc}，低于 {MIN_WORDS}",
+            issues.append(Issue(severity="warning", code="word_count_low", episode_index=idx,
+                                message=f"第{idx}集字数 {wc}，低于 {MIN_WORDS}",
                                 suggestion="内容偏单薄，补充冲突拉扯细节"))
             score -= 2
         elif wc > MAX_WORDS:
-            issues.append(Issue(severity="warning", code="word_count_high",
-                                episode_index=idx, message=f"第{idx}集字数 {wc}，高于 {MAX_WORDS}",
+            issues.append(Issue(severity="warning", code="word_count_high", episode_index=idx,
+                                message=f"第{idx}集字数 {wc}，高于 {MAX_WORDS}",
                                 suggestion="压缩台词与动作，单集控制在 300-500 字"))
             score -= 2
         for pat in SENSITIVE_PATTERNS:
             if pat in ep.source_text:
-                issues.append(Issue(severity="error", code="sensitive",
-                                    episode_index=idx, message=f"第{idx}集命中敏感词：{pat}",
+                issues.append(Issue(severity="error", code="sensitive", episode_index=idx,
+                                    message=f"第{idx}集命中敏感词：{pat}",
                                     suggestion="删除/改写相关内容，避免违规下架"))
                 score -= 10
         for ch in characters:
@@ -91,16 +93,15 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
                     continue
                 kw = fb.strip().split("，")[0][:6]
                 if kw and kw in ep.source_text:
-                    issues.append(Issue(severity="warning", code="ooc",
-                                        episode_index=idx,
+                    issues.append(Issue(severity="warning", code="ooc", episode_index=idx,
                                         message=f"第{idx}集疑似触发『{ch.name}』禁止行为：{fb}",
                                         suggestion="核对是否违背该人物人设红线"))
         for m in _scene_marks(ep.source_text):
             pos = m.group(0)
             if pos.startswith("【内") and any(k in pos for k in OUTDOOR_KEYWORDS) \
                     and not any(i in pos for i in INDOOR_KEYWORDS):
-                issues.append(Issue(severity="warning", code="scene_inout",
-                                    episode_index=idx, message=f"第{idx}集户外场景误标【内】：{pos}",
+                issues.append(Issue(severity="warning", code="scene_inout", episode_index=idx,
+                                    message=f"第{idx}集户外场景误标【内】：{pos}",
                                     suggestion="村口/巷口/广场/山道/街道等室外场景应标【外】"))
                 score -= 2
                 break
@@ -108,43 +109,36 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
             line_words = sum(len(b.text) for b in ep.beats if b.kind == "line")
             ratio = line_words / ep.word_count
             if ratio < MIN_LINE_RATIO:
-                issues.append(Issue(severity="warning", code="line_density",
-                                    episode_index=idx,
+                issues.append(Issue(severity="warning", code="line_density", episode_index=idx,
                                     message=f"第{idx}集台词密度 {ratio:.0%}，低于建议 {MIN_LINE_RATIO:.0%}",
                                     suggestion="动作/叙述偏小说化，增加外部动作与对白拉扯"))
                 score -= 2
         novel_hits = [k for k in NOVEL_NARRATION
                       if any(b.kind == "meta" and k in b.text for b in ep.beats)]
         if novel_hits:
-            issues.append(Issue(severity="warning", code="novel_narration",
-                                episode_index=idx,
+            issues.append(Issue(severity="warning", code="novel_narration", episode_index=idx,
                                 message=f"第{idx}集含小说化叙述词：{'、'.join(novel_hits[:4])}",
                                 suggestion="【动作】里避免心理/眼神/神态描写，改写为可拍外部动作"))
             score -= 2
         if idx in (16, 30) and "赵叔" in ep.source_text and "师叔" in ep.source_text:
-            issues.append(Issue(severity="warning", code="redundant_role",
-                                episode_index=idx,
+            issues.append(Issue(severity="warning", code="redundant_role", episode_index=idx,
                                 message="同集出现『赵叔』『师叔』两个功能相似的老伙计，疑似设定冗余",
                                 suggestion="合并为一个角色"))
         if target_count is not None and idx == episodes[-1].index and len(episodes) < target_count:
-            issues.append(Issue(severity="warning", code="target_mismatch",
-                                episode_index=idx,
+            issues.append(Issue(severity="warning", code="target_mismatch", episode_index=idx,
                                 message=f"目标 {target_count} 集，实际仅 {len(episodes)} 集",
                                 suggestion="补齐缺失集数，或将目标集数改为实际集数"))
 
-        # ---- AI 味：每集台词级检查 ----
         lines = [b.text for b in ep.beats if b.kind == "line"]
         maxim = [l for l in lines if MAXIM_RE.search(l) or any(m in l for m in MAXIM_FALLBACK)]
         if maxim:
-            issues.append(Issue(severity="warning", code="ai_maxim",
-                                episode_index=idx,
+            issues.append(Issue(severity="warning", code="ai_maxim", episode_index=idx,
                                 message=f"第{idx}集台词含对仗金句（书面感重）：『{maxim[0][:24]}…』",
                                 suggestion="口语化改写，避免开口讲大道理；用短句+行为代替说教"))
             score -= 2
         written = [w for w in WRITTEN_WORDS if any(w in l for l in lines)]
         if written:
-            issues.append(Issue(severity="warning", code="ai_written",
-                                episode_index=idx,
+            issues.append(Issue(severity="warning", code="ai_written", episode_index=idx,
                                 message=f"第{idx}集台词含书面连词：{'、'.join(written[:4])}，偏书面",
                                 suggestion="人物口语化：村民土气、反派乡绅圆滑、主角短句克制"))
             score -= 2
@@ -152,22 +146,25 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
         repeat_counter.update(w for w in AI_REPEAT_WORDS if w in ep.source_text)
         deus_count += sum(1 for p in DEUS_PATTERNS if p in ep.source_text)
         eavesdrop_count += sum(1 for p in EAVESDROP_PATTERNS if p in ep.source_text)
+        full_body_text += ep.source_text
+        cliff_setup_count += sum(1 for p in CLIFF_SETUP_WORDS if p in ep.source_text)
         if ep.hook:
             hook_total += 1
             if any(k in ep.hook for k in ["印", "章", "信", "黑", "影", "暗格", "残页", "令牌", "密"]):
                 hook_props += 1
+            if any(k in ep.hook for k in CLIFF_HOOK_WORDS):
+                cliff_hook_hit = True
+                cliff_ep = idx
 
     if episodes:
         first = episodes[0]
         head = first.source_text[:120]
         if any(k in head for k in ["小时候", "回忆", "从小", "那年", "从前", "背景介绍", "身世交代"]):
-            issues.append(Issue(severity="warning", code="slow_open",
-                                episode_index=first.index,
+            issues.append(Issue(severity="warning", code="slow_open", episode_index=first.index,
                                 message="第1集开头疑似大段背景/回忆铺垫",
                                 suggestion="短剧前 8 秒必须直抛绝境冲突"))
             score -= 3
 
-    # ---- AI 味：跨集聚合告警（一次性） ----
     for w, n in repeat_counter.items():
         if n >= AI_REPEAT_THRESHOLD:
             issues.append(Issue(severity="warning", code="ai_repeat_word",
@@ -181,13 +178,32 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
         score -= 2
     if eavesdrop_count >= EAVESDROP_THRESHOLD:
         issues.append(Issue(severity="warning", code="ai_eavesdrop",
-                            message=f"全剧出现 {eavesdrop_count} 处窗外黑影/偷听/门帘桥段",
-                            suggestion="合并重复偷听桥段，改用正面冲突或人物直接交流推进信息"))
+                            message=f"全剧出现 {eavesdrop_count} 处窗外黑影/偷听/门帘/门外撞破桥段",
+                            suggestion="主角/贵人避免亲自趴窗或恰在门外撞破密谋，改由线人/眼线回报"))
         score -= 2
     if hook_total >= 6 and hook_props / hook_total > 0.6:
         issues.append(Issue(severity="warning", code="ai_hook_single",
                             message=f"物证/悬疑类钩子占比 {hook_props}/{hook_total}，类型单一",
                             suggestion="多用情感钩子（人物秘密、两难选择、心理转折），允许情感落点收尾"))
+        score -= 2
+
+    # 弱点落地检测仅针对主角：反派弱点（贪财/怕死等）常通过恶行天然体现，无需静态检测；
+    # 而"主角弱点标签悬空"是 AI 通病（弱点只写进人物卡、剧情零体现），需强制拦截。
+    for ch in characters:
+        if ch.role_type != "protagonist":
+            continue
+        weak = (ch.core_weakness or "").strip()
+        if len(weak) > 2 and not any(w in full_body_text for w in WEAKNESS_GROUNDED_WORDS):
+            issues.append(Issue(severity="warning", code="weakness_grounded",
+                                message=f"『{ch.name}』人设弱点「{weak[:20]}…」全剧无行为落地，标签悬空",
+                                suggestion="设计一处该弱点被触发的戏（如对帮凶心软/被旧情羁绊产生犹豫），让弱点真正影响抉择"))
+            score -= 2
+
+    if cliff_hook_hit and cliff_setup_count < 2:
+        issues.append(Issue(severity="warning", code="cliff_hook_unforeshadowed",
+                            episode_index=cliff_ep,
+                            message=f"第{cliff_ep}集续集类钩子（京城/太医院/神秘）前文铺垫仅 {cliff_setup_count} 处，过于空降",
+                            suggestion="在前 2/3 篇幅零星埋传闻（太医院寻秦氏后人、赵老爷提京城动向），结尾钩子才不生硬"))
         score -= 2
 
     score = max(0, score)
@@ -201,5 +217,5 @@ def validate_episodes(episodes: list[Episode], characters: list[Character] | Non
     return ValidationReport(issues=issues, score=score, summary=summary)
 
 
-def _has_hook_beat(ep: Episode) -> bool:
+def _has_hook_beat(ep):
     return any(b.kind == "hook" for b in ep.beats)
