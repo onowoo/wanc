@@ -47,9 +47,14 @@ PLOT_REPEAT_THRESHOLD = 4
 INFO_GIVEAWAY_PATTERNS = ["全盘招供", "和盘托出", "一五一十", "全都招", "我全说", "都说了",
                           "他全招了", "直接坦白", "如实招来"]
 # 第四轮：官府行动触发缺失——官差出动但未交代谁举报/县令是否知晓
-GOV_ACTION_WORDS = ["官差", "衙役", "差役", "官府", "带走", "锁拿"]
+# 注："官府"多为背景词（买通官府/惊动官府），非官差实际出动，不列入
+GOV_ACTION_WORDS = ["官差", "衙役", "差役", "带走", "锁拿", "抓人"]
 GOV_TRIGGER_WORDS = ["县令", "举报", "报案", "状纸", "上堂", "奉县令", "大人", "衙门口",
                      "官府令", "官差来查", "告到"]
+# 第五轮：伏笔未回收——反派"找人封口/找证人"埋线后，后续集该证人须出场作证/揭发
+# 回收词聚焦到被点名的证人实体（如"老孙"），避免"作证/反咬"等泛词误判他线已回收
+FORESHADOW_SETUP_WORDS = ["封口", "闭了嘴", "闭嘴"]
+FORESHADOW_RECOVER_WORDS = ["老孙", "老账房", "账房老孙"]
 
 
 def _scene_marks(source: str):
@@ -224,6 +229,17 @@ def validate_episodes(episodes, characters=None, target_count=None):
                             message=f"第 {'/'.join(map(str, giveaway_eps))} 集关键线索疑似靠反派/杀手主动全盘招供（白送）",
                             suggestion="让反派只吐碎片化线索，主角靠走访/推理/对质拼凑真相，禁止'杀手和盘托出全部阴谋'"))
         score -= 2
+
+    # 第五轮：伏笔未回收——"找人封口"埋线后，后续集该证人须出场作证/揭发
+    setup_eps = [ep.index for ep in episodes if any(s in ep.source_text for s in FORESHADOW_SETUP_WORDS)]
+    if setup_eps:
+        last_setup = max(setup_eps)
+        tail = "".join(ep.source_text for ep in episodes if ep.index > last_setup)
+        if not any(r in tail for r in FORESHADOW_RECOVER_WORDS):
+            issues.append(Issue(severity="warning", code="abandoned_foreshadow",
+                                message=f"第 {last_setup} 集埋下『封口/找证人』线索，但后续 {len(episodes) - last_setup} 集未回收（证人未出场/未作证）",
+                                suggestion="安排该证人在后续集出场作证/揭发，或直接删除此线，避免废弃伏笔"))
+            score -= 2
 
     # 弱点落地检测仅针对主角：反派弱点（贪财/怕死等）常通过恶行天然体现，无需静态检测；
     # 而"主角弱点标签悬空"是 AI 通病（弱点只写进人物卡、剧情零体现），需强制拦截。
