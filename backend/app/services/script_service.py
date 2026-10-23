@@ -22,17 +22,22 @@ def get_episodes(project_id: str) -> list[Episode]:
 
 
 def import_text(project_id: str, raw_text: str, label: str = "导入") -> dict:
-    """解析大模型返回文本 → 覆盖分集 → 校验 → 快照，返回结构化结果。"""
-    episodes = parser.parse_script(raw_text)
-    _persist_episodes(project_id, episodes)
+    """解析大模型返回文本 → 按集 index 合并进现有剧本（新增/覆盖同名）→ 校验 → 快照。"""
+    parsed = parser.parse_script(raw_text)
+    existing = get_episodes(project_id)
+    by_idx = {e.index: e for e in existing}
+    for ep in parsed:
+        by_idx[ep.index] = ep  # 新集覆盖同名 index，其余保留
+    merged = sorted(by_idx.values(), key=lambda e: e.index)
+    _persist_episodes(project_id, merged)
 
     chars = cs.list_characters(project_id)
-    report = v.validate_episodes(episodes, chars)
-    versioning.snapshot(project_id, label or f"导入 {len(episodes)} 集")
+    report = v.validate_episodes(merged, chars)
+    versioning.snapshot(project_id, label or f"导入 {len(parsed)} 集")
     ps.touch(project_id)
     return {
-        "episode_count": len(episodes),
-        "episodes": [e.model_dump() for e in episodes],
+        "episode_count": len(parsed),
+        "episodes": [e.model_dump() for e in parsed],
         "report": report.model_dump(),
     }
 

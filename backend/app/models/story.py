@@ -2,7 +2,7 @@
 """剧本数据模型：卖点、梗概、大纲、分集脚本。"""
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class SceneBeat(BaseModel):
@@ -19,6 +19,7 @@ class Episode(BaseModel):
     source_text: str = Field(default="", description="该集原始文本（便于溯源）")
     hook: str = Field(default="", description="本集结尾钩子（解析时提取）")
 
+    @computed_field
     @property
     def word_count(self) -> int:
         return len(self.source_text)
