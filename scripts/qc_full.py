@@ -27,11 +27,12 @@ def q():
 def main():
     ep_dicts = req("GET", f"/projects/{q()}/scripts")["episodes"]
     ch_dicts = req("GET", f"/projects/{q()}/characters")
+    proj = req("GET", f"/projects/{q()}")
     episodes = [Episode.model_validate(d) for d in ep_dicts]
     characters = [Character.model_validate(d) for d in ch_dicts]
 
     episodes.sort(key=lambda e: e.index)
-    report = validate_episodes(episodes, characters)
+    report = validate_episodes(episodes, characters, target_count=proj.get("target_episodes"))
 
     print(f"总集数: {len(episodes)}")
     print(f"质量分: {report.score} | {report.summary}")

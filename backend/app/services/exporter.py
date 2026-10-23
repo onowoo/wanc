@@ -21,6 +21,10 @@ def build_markdown(project_id: str) -> str:
     if meta.genre:
         lines.append(f"> 题材：{meta.genre}　|　赛道：{meta.track}　|　目标集数：{meta.target_episodes}")
         lines.append("")
+    # 集数完整性：目标集数 vs 实际集数（投稿级事故，审稿第一页即卡）
+    if meta.target_episodes and len(story.episodes) < meta.target_episodes:
+        lines.append(f"> ⚠ 目标 {meta.target_episodes} 集，当前正文仅 {len(story.episodes)} 集，投稿前需补齐或核对目标集数")
+        lines.append("")
 
     lines.append("## 一句话卖点")
     lines.append(outline.get("pitch", "") or "（未填写）")
