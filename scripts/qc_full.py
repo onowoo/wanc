@@ -8,7 +8,7 @@ import urllib.request
 sys.path.insert(0, "E:/project/hongguo/wanc/backend")
 from app.models.character import Character  # noqa: E402
 from app.models.story import Episode  # noqa: E402
-from app.services.validator import validate_episodes  # noqa: E402
+from app.services.validator import validate_episodes, diagnose_opening  # noqa: E402
 
 PID = "演示_神级医仙"
 BASE = "http://127.0.0.1:8000/api"
@@ -69,6 +69,19 @@ def main():
     for idx in [1, 10, 20]:
         if idx <= len(episodes):
             print(f"第{idx}集钩子: {episodes[idx-1].hook[:40]}...")
+
+    # 开篇爆点诊断（第1集专项）
+    print("== 开篇爆点诊断（第1集）==")
+    opening = diagnose_opening(episodes)
+    for d in opening["dims"]:
+        mark = "✅" if d["hit"] else "❌"
+        ev = "、".join(d["words"]) if d["hit"] else "缺失"
+        print(f"{mark} {d['label']}: {ev}")
+    print(f"开篇爆点评分: {opening['score']}/{opening['total']}")
+    if opening["missing"]:
+        print(f"缺项: {'、'.join(opening['missing'])} → 建议强化后重写第1集")
+    else:
+        print("六项爆点要素全部到位 ✅")
 
 
 if __name__ == "__main__":

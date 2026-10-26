@@ -57,6 +57,18 @@ GOV_TRIGGER_WORDS = ["县令", "举报", "报案", "状纸", "上堂", "奉县�
 FORESHADOW_SETUP_WORDS = ["封口", "闭了嘴", "闭嘴", "藏在地窖", "地窖里", "留了底", "留着底"]
 FORESHADOW_RECOVER_WORDS = ["老孙", "老账房", "账房老孙", "黑账"]
 
+# 开篇爆点诊断词表（第1集专项）：对标爆款开篇公式——金手指显形/冲突不可逆/
+# 命运包袱立起/爽点碾压级/情绪钩子/信息差先知。命中任一代表词即视为该维度"显形"。
+OPEN_GOLDEN_WORDS = ["重生", "重活", "上一世", "这辈子", "我死过一回", "记得", "预知",
+                     "先知", "上辈子", "再来一回", "穿越", "穿到", "降维"]
+OPEN_CONFLICT_WORDS = ["断肠草", "毒", "死", "逼死", "杀", "咽气", "害人", "夺", "封馆",
+                       "入狱", "丧命", "救不回", "毒死"]
+OPEN_STAKE_WORDS = ["医馆", "济世堂", "姓秦", "抢", "冤", "讨", "保住", "替您", "仇",
+                    "守不住", "夺回来"]
+OPEN_SATISFY_WORDS = ["灌回", "反手", "当场", "现形", "先尝", "点破", "揭穿", "制住", "压"]
+OPEN_EMOTION_WORDS = ["眼眶发红", "攥紧", "执念", "不会让您", "死过一回", "决绝", "泪", "守住"]
+OPEN_FORESIGHT_WORDS = ["上一世", "这辈子", "记得", "我死过一回", "就是今夜", "今晚", "预知", "先知"]
+
 
 def _scene_marks(source: str):
     return _SCENE_RE.finditer(source)
@@ -274,3 +286,33 @@ def validate_episodes(episodes, characters=None, target_count=None):
 
 def _has_hook_beat(ep):
     return any(b.kind == "hook" for b in ep.beats)
+
+
+# 开篇爆点诊断：对标爆款短剧第1集公式，逐项检查第1集是否命中爆点要素。
+# 独立诊断，不并入 validate_episodes 主分扣分；返回结构化报告供 QC 输出。
+OPEN_DIMENSIONS = [
+    ("golden", "金手指显形", OPEN_GOLDEN_WORDS, "第1集须亮出'凭什么是主角'（重生先知/穿越降维/身份），不能只平级救人"),
+    ("conflict", "冲突不可逆", OPEN_CONFLICT_WORDS, "开场须生死/至亲/绝境级压迫，不能只是口角羞辱"),
+    ("stake", "命运包袱立起", OPEN_STAKE_WORDS, "全剧最大悬念（仇/夺馆/护至亲）须第1集前置，不能结尾才冒"),
+    ("satisfy", "爽点碾压级", OPEN_SATISFY_WORDS, "爽点须压反派一头（反将/当场现形），不是平级救个路人"),
+    ("emotion", "情绪钩子", OPEN_EMOTION_WORDS, "须有让人上头的执念/悔恨/决绝情绪"),
+    ("foresight", "信息差显形", OPEN_FORESIGHT_WORDS, "重生先知/记忆金手指须显形（预知杀局），信息差即爽感"),
+]
+
+
+def diagnose_opening(episodes):
+    """开篇爆点诊断（第1集专项）。返回 dict:
+    {score, total, missing, dims:[{key,label,hit,words,note}]}"""
+    first = next((e for e in episodes if e.index == 1), None)
+    if first is None:
+        return {"score": 0, "total": len(OPEN_DIMENSIONS),
+                "missing": ["第1集缺失"], "dims": []}
+    text = first.source_text
+    dims = []
+    for key, label, words, note in OPEN_DIMENSIONS:
+        hit = [w for w in words if w in text]
+        dims.append({"key": key, "label": label, "hit": bool(hit),
+                     "words": hit[:4], "note": note})
+    hit_count = sum(1 for d in dims if d["hit"])
+    return {"score": hit_count, "total": len(dims),
+            "missing": [d["label"] for d in dims if not d["hit"]], "dims": dims}
