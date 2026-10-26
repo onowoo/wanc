@@ -56,6 +56,12 @@ GOV_TRIGGER_WORDS = ["县令", "举报", "报案", "状纸", "上堂", "奉县�
 # 回收词聚焦到证人实体（老孙）与具体物证名（黑账）——"呈上/账册"等泛词易被他案公堂呈证误判
 FORESHADOW_SETUP_WORDS = ["封口", "闭了嘴", "闭嘴", "藏在地窖", "地窖里", "留了底", "留着底"]
 FORESHADOW_RECOVER_WORDS = ["老孙", "老账房", "账房老孙", "黑账"]
+# 第八轮：当众摊牌打脸模式重复——公开亮证/当众高光（验药/验毒/辩医/公堂翻案）全剧重复检测。
+# 词表仅框定"医术竞技场/公堂翻案"式公开打脸（验药台/医道大会/验毒/联名状/冤屈昭雪），
+# 身份曝光（当众点破）、被动应诉（当堂核对）不计入；命中同时交代官差公示/私下呈衙则该集豁免。
+PUBLIC_REVEAL_WORDS = ["医道大会", "验药台", "当众摆开", "甩出药单", "联名状纸", "冤屈昭雪"]
+PUBLIC_REVEAL_DIFF = ["呈衙", "呈县衙", "交县衙", "连夜呈", "公示", "官差登门", "按批文", "递状"]
+PUBLIC_REVEAL_THRESHOLD = 4
 
 # 开篇爆点诊断词表（第1集专项）：对标爆款开篇公式——金手指显形/冲突不可逆/
 # 命运包袱立起/爽点碾压级/情绪钩子/信息差先知。命中任一代表词即视为该维度"显形"。
@@ -93,6 +99,8 @@ def validate_episodes(episodes, characters=None, target_count=None):
     cliff_ep = None
     plot_eps = set()          # 命中陷害类桥段的集
     giveaway_eps = []          # 命中信息白送的集
+    reveal_eps = set()         # 命中公开亮证打脸桥段的集
+    reveal_diff_eps = set()    # 其中已交代官差公示/私下呈衙（差异化）的集
 
     for ep in episodes:
         idx = ep.index
@@ -184,6 +192,10 @@ def validate_episodes(episodes, characters=None, target_count=None):
             plot_eps.add(idx)
         if any(p in ep.source_text for p in INFO_GIVEAWAY_PATTERNS):
             giveaway_eps.append(idx)
+        if any(w in ep.source_text for w in PUBLIC_REVEAL_WORDS):
+            reveal_eps.add(idx)
+            if any(d in ep.source_text for d in PUBLIC_REVEAL_DIFF):
+                reveal_diff_eps.add(idx)
         has_gov_action = any(w in ep.source_text for w in GOV_ACTION_WORDS)
         has_gov_trigger = any(t in ep.source_text for t in GOV_TRIGGER_WORDS)
         if has_gov_action and not has_gov_trigger:
@@ -241,6 +253,14 @@ def validate_episodes(episodes, characters=None, target_count=None):
         issues.append(Issue(severity="warning", code="ai_info_giveaway",
                             message=f"第 {'/'.join(map(str, giveaway_eps))} 集关键线索疑似靠反派/杀手主动全盘招供（白送）",
                             suggestion="让反派只吐碎片化线索，主角靠走访/推理/对质拼凑真相，禁止'杀手和盘托出全部阴谋'"))
+        score -= 2
+
+    # 第八轮：当众摊牌打脸模式重复——公开亮证高光全剧净重复超阈值
+    repetitive_reveal = sorted(reveal_eps - reveal_diff_eps)
+    if len(repetitive_reveal) >= PUBLIC_REVEAL_THRESHOLD:
+        issues.append(Issue(severity="warning", code="ai_repeat_showdown",
+                            message=f"当众亮证打脸类高光集中在第 {'/'.join(map(str, repetitive_reveal))} 集共 {len(repetitive_reveal)} 处，模式重复",
+                            suggestion="公开高光全剧不超过 3 处；多余物证改由赵府管家/线人私下递交县衙、官差按批文公示结果，避免男主反复当众表演打脸"))
         score -= 2
 
     # 第五轮：伏笔未回收——"找人封口"埋线后，后续集该证人须出场作证/揭发
